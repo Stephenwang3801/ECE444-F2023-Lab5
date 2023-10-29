@@ -1,9 +1,11 @@
 import os
 import pytest
 from pathlib import Path
-from flask import Flask, g, render_template, request, session, flash, redirect, url_for, abort, jsonify,json
 
-from project.app import app, init_db
+from project.app import app, db
+from project import models
+import json
+
 
 TEST_DB = "test.db"
 
@@ -13,10 +15,12 @@ def client():
     BASE_DIR = Path(__file__).resolve().parent.parent
     app.config["TESTING"] = True
     app.config["DATABASE"] = BASE_DIR.joinpath(TEST_DB)
+    app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{BASE_DIR.joinpath(TEST_DB)}"
 
-    init_db() # setup
-    yield app.test_client() # tests run here
-    init_db() # teardown
+    with app.app_context():
+        db.create_all()  # setup
+        yield app.test_client()  # tests run here
+        db.drop_all()  # teardown
 
 
 def login(client, username, password):
@@ -74,8 +78,53 @@ def test_messages(client):
     assert b"&lt;Hello&gt;" in rv.data
     assert b"<strong>HTML</strong> allowed here" in rv.data
 
+
 def test_delete_message(client):
     """Ensure the messages are being deleted"""
-    rv = client.get('/delete/1')
+    rv = client.get("/delete/1")
+    data = json.loads(rv.data)
+    assert data["status"] == 0
+    login(client, app.config["USERNAME"], app.config["PASSWORD"])
+    rv = client.get("/delete/1")
     data = json.loads(rv.data)
     assert data["status"] == 1
+
+
+def test_search(client):
+    """Test the search function."""
+
+    # Add a sample post to the database for the search test - chat GPT help create this TEST CITATION USING THE SMAPLE POST, HELP DO THE ASSERT STATEMNETS
+    sample_post = models.Post(
+        title="Sample Post", text="This is a test post for searching."
+    )
+    db.session.add(sample_post)
+    db.session.commit()
+
+    # Search for the post using a keyword
+    response = client.get("/search/?query=test")
+
+    # Assert that the sample post appears in the search results
+    assert b"Sample Post" in response.data
+    assert b"This is a test post for searching." in response.data
+
+    # Search with a non-existent keyword
+    response = client.get("/search/?query=nonexistent")
+
+    # Assert that the sample post doesn't appear for this search query
+    assert b"Sample Post" not in response.data
+
+
+def test_login_required_decorator_not_logged_in(client):
+    """Ensure login_required stops users who are not logged in."""
+    rv = client.get("/test_login_required")
+    data = json.loads(rv.data)
+    assert data["status"] == 0
+    assert data["message"] == "Please log in."
+    assert rv.status_code == 401
+
+
+def test_login_required_decorator_logged_in(client):
+    """Ensure login_required allows users who are logged in."""
+    login(client, app.config["USERNAME"], app.config["PASSWORD"])
+    rv = client.get("/test_login_required")
+    assert b"You are logged in!" in rv.data
